@@ -20,6 +20,8 @@
 /.next/
 /.vinext/
 /out/
+!/out/
+!/out/**
 
 # misc
 .DS_Store
