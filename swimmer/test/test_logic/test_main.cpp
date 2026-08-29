@@ -1,0 +1,271 @@
+#include <unity.h>
+
+#include <cstring>
+
+#include "collision_pulse.h"
+#include "provision_protocol.h"
+#include "serial_test_control.h"
+#include "servo_motion.h"
+#include "swimmer_safety.h"
+
+void setUp() {}
+void tearDown() {}
+
+namespace {
+
+spp::ProvisionPacket makeGoldenPacket() {
+  spp::ProvisionPacket packet{};
+  memcpy(packet.magic, spp::kProvisionMagic, sizeof(packet.magic));
+  packet.version = spp::kProvisionVersion;
+  packet.sequence = 0x01020304U;
+  constexpr char ssid[] = "Pool-Safety";
+  constexpr char password[] = "example-password";
+  packet.ssidLength = sizeof(ssid) - 1;
+  packet.passwordLength = sizeof(password) - 1;
+  memcpy(packet.ssid, ssid, packet.ssidLength);
+  memcpy(packet.password, password, packet.passwordLength);
+  packet.serverIpv4[0] = 192;
+  packet.serverIpv4[1] = 168;
+  packet.serverIpv4[2] = 1;
+  packet.serverIpv4[3] = 3;
+  packet.serverPort = 8000;
+  packet.crc32 = spp::calculateCrc32(
+      reinterpret_cast<const uint8_t *>(&packet),
+      offsetof(spp::ProvisionPacket, crc32));
+  return packet;
+}
+
+void testProvisionGoldenVector() {
+  const spp::ProvisionPacket packet = makeGoldenPacket();
+  const auto *wire = reinterpret_cast<const uint8_t *>(&packet);
+  TEST_ASSERT_EQUAL_UINT32(116, sizeof(packet));
+  TEST_ASSERT_EQUAL_HEX8(0xC0, wire[106]);
+  TEST_ASSERT_EQUAL_HEX8(0xA8, wire[107]);
+  TEST_ASSERT_EQUAL_HEX8(0x01, wire[108]);
+  TEST_ASSERT_EQUAL_HEX8(0x03, wire[109]);
+  TEST_ASSERT_EQUAL_HEX8(0x40, wire[110]);
+  TEST_ASSERT_EQUAL_HEX8(0x1F, wire[111]);
+  TEST_ASSERT_EQUAL_HEX32(0x4BB94BEAU, packet.crc32);
+  TEST_ASSERT_TRUE(spp::validProvisionPacket(packet, sizeof(packet)));
+}
+
+void testProvisionRejectsInvalidInputs() {
+  spp::ProvisionPacket packet = makeGoldenPacket();
+  TEST_ASSERT_FALSE(spp::validProvisionPacket(packet, 110));
+  packet.version = 1;
+  TEST_ASSERT_FALSE(spp::validProvisionPacket(packet, sizeof(packet)));
+
+  packet = makeGoldenPacket();
+  packet.serverIpv4[0] = 127;
+  packet.crc32 = spp::calculateCrc32(
+      reinterpret_cast<const uint8_t *>(&packet),
+      offsetof(spp::ProvisionPacket, crc32));
+  TEST_ASSERT_FALSE(spp::validProvisionPacket(packet, sizeof(packet)));
+
+  packet = makeGoldenPacket();
+  packet.passwordLength = 7;
+  packet.crc32 = spp::calculateCrc32(
+      reinterpret_cast<const uint8_t *>(&packet),
+      offsetof(spp::ProvisionPacket, crc32));
+  TEST_ASSERT_FALSE(spp::validProvisionPacket(packet, sizeof(packet)));
+
+  packet = makeGoldenPacket();
+  packet.ssid[0] ^= 1;
+  TEST_ASSERT_FALSE(spp::validProvisionPacket(packet, sizeof(packet)));
+}
+
+void testSafetyThresholdBoundaries() {
+  swimmer::SafetyController safety;
+  safety.beginMonitoring(1000);
+  safety.update(10999);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(swimmer::AlertStage::Normal),
+                        static_cast<int>(safety.alertStage()));
+  TEST_ASSERT_FALSE(safety.vibrationRequired());
+
+  safety.update(11000);
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(swimmer::AlertStage::SuspectedDrowning),
+      static_cast<int>(safety.alertStage()));
+  TEST_ASSERT_TRUE(safety.vibrationRequired());
+
+  safety.update(20999);
+  TEST_ASSERT_FALSE(safety.rescueLatched());
+  safety.update(21000);
+  TEST_ASSERT_TRUE(safety.rescueLatched());
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(swimmer::AlertStage::RescueTriggered),
+      static_cast<int>(safety.alertStage()));
+}
+
+void testOnlyMatchingAcceptedAckRefreshesWatchdog() {
+  swimmer::SafetyController safety;
+  safety.beginMonitoring(0);
+  safety.update(10000);
+
+  safety.onHeartbeatAck(true, true, 10001);
+  TEST_ASSERT_EQUAL_UINT8(1, safety.recoveryAckCount());
+  TEST_ASSERT_EQUAL_UINT32(0, safety.communicationLossMs(10001));
+
+  safety.onHeartbeatAck(false, true, 10002);
+  TEST_ASSERT_EQUAL_UINT8(0, safety.recoveryAckCount());
+  TEST_ASSERT_EQUAL_UINT32(1, safety.communicationLossMs(10002));
+
+  safety.onHeartbeatAck(true, false, 10003);
+  TEST_ASSERT_EQUAL_UINT8(0, safety.recoveryAckCount());
+  TEST_ASSERT_EQUAL_UINT32(2, safety.communicationLossMs(10003));
+  TEST_ASSERT_TRUE(safety.vibrationRequired());
+}
+
+void testThreeAcksRecoverButRescueStaysLatchedUntilReset() {
+  swimmer::SafetyController safety;
+  safety.beginMonitoring(0);
+  safety.update(20000);
+  TEST_ASSERT_TRUE(safety.rescueLatched());
+  TEST_ASSERT_FALSE(safety.resetRescueLatch(20000));
+
+  safety.onHeartbeatAck(true, true, 20001);
+  safety.onHeartbeatAck(true, true, 21001);
+  TEST_ASSERT_TRUE(safety.vibrationRequired());
+  safety.onHeartbeatAck(true, true, 22001);
+  TEST_ASSERT_FALSE(safety.vibrationRequired());
+  TEST_ASSERT_TRUE(safety.rescueLatched());
+  TEST_ASSERT_TRUE(safety.resetRescueLatch(22002));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(swimmer::AlertStage::Normal),
+                        static_cast<int>(safety.alertStage()));
+}
+
+void testMillisWraparoundUsesUnsignedElapsedTime() {
+  swimmer::SafetyController safety;
+  safety.beginMonitoring(0xFFFFFF00U);
+  safety.update(0x0000260FU);  // 9,999 ms after start across wrap.
+  TEST_ASSERT_FALSE(safety.vibrationRequired());
+  safety.update(0x00002610U);  // 10,000 ms after start.
+  TEST_ASSERT_TRUE(safety.vibrationRequired());
+}
+
+void testSerialPauseCommandsAreTrimmedAndCaseInsensitive() {
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(swimmer::SerialTestCommand::Stop),
+      static_cast<int>(swimmer::parseSerialTestCommand("stop", 4)));
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(swimmer::SerialTestCommand::Stop),
+      static_cast<int>(swimmer::parseSerialTestCommand("  STOP\r\n", 8)));
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(swimmer::SerialTestCommand::Continue),
+      static_cast<int>(
+          swimmer::parseSerialTestCommand("Continue\n", 9)));
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(swimmer::SerialTestCommand::None),
+      static_cast<int>(swimmer::parseSerialTestCommand("stopped", 7)));
+}
+
+void testRescueCanBeDisabledAndManuallyTriggered() {
+  swimmer::SafetyController safety;
+  safety.beginMonitoring(0);
+  safety.setRescueEnabled(false);
+  safety.update(swimmer::kRescueTriggerMs + 1);
+  TEST_ASSERT_TRUE(safety.vibrationRequired());
+  TEST_ASSERT_FALSE(safety.rescueLatched());
+
+  safety.forceRescue();
+  TEST_ASSERT_TRUE(safety.rescueLatched());
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(swimmer::AlertStage::RescueTriggered),
+      static_cast<int>(safety.alertStage()));
+}
+
+void testCollisionPulseIsShortAndHandlesMillisWraparound() {
+  swimmer::CollisionPulseController pulse;
+  pulse.trigger(1000);
+  TEST_ASSERT_TRUE(pulse.active(1000));
+  TEST_ASSERT_TRUE(pulse.active(1249));
+  TEST_ASSERT_FALSE(pulse.active(1250));
+
+  pulse.trigger(0xFFFFFFF0U);
+  TEST_ASSERT_TRUE(pulse.active(0x000000E9U));
+  TEST_ASSERT_FALSE(pulse.active(0x000000EAU));
+}
+
+void testServoPulseMappingUsesConfiguredRange() {
+  TEST_ASSERT_EQUAL_UINT16(600, swimmer::servoPulseForAngle(0));
+  TEST_ASSERT_EQUAL_UINT16(1100, swimmer::servoPulseForAngle(45));
+  TEST_ASSERT_EQUAL_UINT16(1600, swimmer::servoPulseForAngle(90));
+  TEST_ASSERT_EQUAL_UINT16(2600, swimmer::servoPulseForAngle(180));
+  TEST_ASSERT_EQUAL_UINT16(2600, swimmer::servoPulseForAngle(999));
+}
+
+void testServoBootSelfTestReturnsTo180AfterOneSecond() {
+  swimmer::ServoMotionController motion;
+  uint8_t angle = 0;
+  motion.beginBootSelfTest(1000);
+  TEST_ASSERT_TRUE(motion.takePendingAngle(angle));
+  TEST_ASSERT_EQUAL_UINT8(90, angle);
+
+  motion.update(1999);
+  TEST_ASSERT_FALSE(motion.takePendingAngle(angle));
+  motion.update(2000);
+  TEST_ASSERT_TRUE(motion.takePendingAngle(angle));
+  TEST_ASSERT_EQUAL_UINT8(180, angle);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(swimmer::ServoSequence::Idle),
+                        static_cast<int>(motion.sequence()));
+}
+
+void testServoRescueRunsFive90To0CyclesAndStopsAt90() {
+  swimmer::ServoMotionController motion;
+  uint8_t angle = 0;
+  motion.beginRescue(1000);
+  TEST_ASSERT_TRUE(motion.takePendingAngle(angle));
+  TEST_ASSERT_EQUAL_UINT8(90, angle);
+
+  const uint8_t expected[] = {0, 90, 0, 90, 0, 90, 0, 90, 0, 90};
+  for (uint8_t index = 0; index < sizeof(expected); ++index) {
+    motion.update(1500 + static_cast<uint32_t>(index) * 500U);
+    TEST_ASSERT_TRUE(motion.takePendingAngle(angle));
+    TEST_ASSERT_EQUAL_UINT8(expected[index], angle);
+  }
+  TEST_ASSERT_EQUAL_UINT8(90, motion.currentAngle());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(swimmer::ServoSequence::Idle),
+                        static_cast<int>(motion.sequence()));
+  motion.update(10000);
+  TEST_ASSERT_FALSE(motion.takePendingAngle(angle));
+}
+
+void testServoResetCancelsSequenceAndHandlesMillisWraparound() {
+  swimmer::ServoMotionController motion;
+  uint8_t angle = 0;
+  motion.beginBootSelfTest(0xFFFFFF00U);
+  motion.takePendingAngle(angle);
+  motion.update(0x000002E7U);  // 999 ms after start across wrap.
+  TEST_ASSERT_FALSE(motion.takePendingAngle(angle));
+  motion.update(0x000002E8U);  // 1,000 ms after start.
+  TEST_ASSERT_TRUE(motion.takePendingAngle(angle));
+  TEST_ASSERT_EQUAL_UINT8(180, angle);
+
+  motion.beginRescue(5000);
+  motion.takePendingAngle(angle);
+  motion.resetToRest();
+  TEST_ASSERT_TRUE(motion.takePendingAngle(angle));
+  TEST_ASSERT_EQUAL_UINT8(180, angle);
+  motion.update(10000);
+  TEST_ASSERT_FALSE(motion.takePendingAngle(angle));
+}
+
+}  // namespace
+
+int main(int, char **) {
+  UNITY_BEGIN();
+  RUN_TEST(testProvisionGoldenVector);
+  RUN_TEST(testProvisionRejectsInvalidInputs);
+  RUN_TEST(testSafetyThresholdBoundaries);
+  RUN_TEST(testOnlyMatchingAcceptedAckRefreshesWatchdog);
+  RUN_TEST(testThreeAcksRecoverButRescueStaysLatchedUntilReset);
+  RUN_TEST(testMillisWraparoundUsesUnsignedElapsedTime);
+  RUN_TEST(testSerialPauseCommandsAreTrimmedAndCaseInsensitive);
+  RUN_TEST(testRescueCanBeDisabledAndManuallyTriggered);
+  RUN_TEST(testCollisionPulseIsShortAndHandlesMillisWraparound);
+  RUN_TEST(testServoPulseMappingUsesConfiguredRange);
+  RUN_TEST(testServoBootSelfTestReturnsTo180AfterOneSecond);
+  RUN_TEST(testServoRescueRunsFive90To0CyclesAndStopsAt90);
+  RUN_TEST(testServoResetCancelsSequenceAndHandlesMillisWraparound);
+  return UNITY_END();
+}

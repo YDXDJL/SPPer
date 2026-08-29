@@ -1,0 +1,5 @@
+fastapi>=0.116,<1
+uvicorn[standard]>=0.35,<1
+pydantic>=2.11,<3
+pyserial>=3.5,<4
+opencv-python-headless>=4.10,<5

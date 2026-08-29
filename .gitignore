@@ -1,0 +1,43 @@
+# Codex workspace metadata
+.codex/
+.codex_board_work/
+
+# Vision training/inference workspace is intentionally excluded. The portable
+# CPU replay assets required by the demo live under demo_assets/ instead.
+yolo/
+
+# Redundant archive; the extracted board/pictures directory is retained.
+board/pictures.zip
+
+# PlatformIO build output
+**/.pio/
+
+# Python environments and caches
+**/.venv/
+**/.venv-*/
+**/__pycache__/
+**/.pytest_cache/
+*.py[cod]
+*.cache
+
+# JavaScript dependencies and build output
+**/node_modules/
+**/.next/
+**/out/
+**/coverage/
+**/dist/
+*.tsbuildinfo
+
+# Runtime-generated data and logs
+*.log
+*.jsonl
+!demo_assets/**/*.jsonl
+computer/data/settings.json
+**/outputs/
+
+# Local environment and editor files
+.env
+.env.*
+!.env.example
+.DS_Store
+Thumbs.db

@@ -1,0 +1,41 @@
+{
+  "source": "D:\\Vibecoding_Projects\\SPPer\\yolo\\FIXED_DATA\\drowning.MP4",
+  "model": "D:\\Vibecoding_Projects\\SPPer\\yolo\\yolo26_training\\runs\\person_yolo26l_20260811_002716\\weights\\best.pt",
+  "config": "D:\\Vibecoding_Projects\\SPPer\\yolo\\tracking\\output_configured\\drowning_configured_config.json",
+  "output_video": "D:\\Vibecoding_Projects\\SPPer\\yolo\\tracking\\output_configured\\drowning_configured_tracked.mp4",
+  "tracks_jsonl": "D:\\Vibecoding_Projects\\SPPer\\yolo\\tracking\\output_configured\\drowning_configured_tracks.jsonl",
+  "collision_events_log": "D:\\Vibecoding_Projects\\SPPer\\yolo\\tracking\\output_configured\\drowning_configured_events.log",
+  "completed": true,
+  "frames_processed": 717,
+  "source_fps": 30.0,
+  "processing_fps_average": 56.968702491161906,
+  "segment_count": 1,
+  "unique_person_ids": [
+    1
+  ],
+  "identity_policy": {
+    "declared_start_roster_only": true,
+    "lane_logic": false,
+    "endpoint_admission_logic": false,
+    "bidirectional_anchor_correction": true,
+    "reacquisition_history_seconds": 5.0,
+    "max_interpolation_gap_seconds": 0.04,
+    "interpolated_records": 0
+  },
+  "motion": {
+    "history_seconds": 5.0,
+    "prediction_seconds": 3.0,
+    "minimum_history_seconds": 0.5,
+    "max_interpolation_gap_seconds": 0.04
+  },
+  "collision_warning": {
+    "prediction_horizon_seconds": 3.0,
+    "warning_frames": 0,
+    "episodes": 0,
+    "pair_warning_frames": {},
+    "episode_end_policy": "both_stationary",
+    "rearm_distance_factor": 4.0,
+    "rearm_safe_seconds": 0.75,
+    "visual_style": "yellow_boxes_no_trajectory_or_prediction_lines"
+  }
+}
