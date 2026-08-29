@@ -18,10 +18,20 @@
 
 ## 快速部署（Windows）
 
-需要64位Python 3.11或3.12。展示包已包含静态网页，普通部署不要求Node.js。
+需要64位Python 3.11或3.12及Git LFS。仓库已包含预构建静态网页，普通部署不要求
+Node.js。首次从GitHub克隆时需要联网安装Python依赖：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\setup_laptop.ps1
+git lfs install
+git clone https://github.com/YDXDJL/SPPer.git
+cd SPPer
+powershell -ExecutionPolicy Bypass -File .\scripts\setup_laptop.ps1 -Online
+```
+
+从已准备好的移动硬盘展示包复制时，若包内存在 `offline_wheels/`，可省略 `-Online`。
+随后验收并启动：
+
+```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\verify_demo.ps1
 powershell -ExecutionPolicy Bypass -File .\scripts\start_demo.ps1
 ```

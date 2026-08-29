@@ -24,6 +24,8 @@ board/pictures.zip
 **/node_modules/
 **/.next/
 **/out/
+!computer/out/
+!computer/out/**
 **/coverage/
 **/dist/
 *.tsbuildinfo
